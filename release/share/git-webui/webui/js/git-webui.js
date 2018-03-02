@@ -163,6 +163,7 @@ webui.TabBox = function(buttons) {
 webui.SideBarView = function(mainView) {
 
     var self = this;
+    var selectedRefName;
 
     self.selectRef = function(refName) {
         var selected = $(".active", self.element);
@@ -187,6 +188,7 @@ webui.SideBarView = function(mainView) {
         if (moreTag && moreTag.length) {
             moreTag.toggleClass("active");
         }
+        selectedRefName = refName;
         self.mainView.historyView.update(refName);
     };
 
@@ -350,23 +352,35 @@ webui.SideBarView = function(mainView) {
 webui.LogView = function(historyView) {
 
     var self = this;
+    var currentRef;
 
     self.update = function(ref) {
-        $(svg).empty();
         streams = []
         $(content).empty();
         self.nextRef = ref;
+        self.currentRef = ref;
         self.populate();
     };
 
-    self.populate = function() {
+    self.search = function(keyword) {
+        streams = []
+        $(content).empty();
+        self.nextRef = self.currentRef;
+        self.populate(keyword);
+    };
+
+    self.populate = function(keyword = "") {
         var maxCount = 1000;
         if (content.childElementCount > 0) {
             // The last node is the 'Show more commits placeholder'. Remove it.
             content.removeChild(content.lastElementChild);
         }
         var startAt = content.childElementCount;
-        webui.git("log --date-order --pretty=raw --decorate=full --max-count=" + (maxCount + 1) + " " + self.nextRef + " --", function(data) {
+        var grep="";
+        if (keyword.length > 0)
+            grep = "--grep='" + keyword + "'";
+
+        webui.git("log --date-order --pretty=raw " + grep + " --decorate=full --max-count=" + (maxCount + 1) + " " + self.nextRef + " --", function(data) {
             var start = 0;
             var count = 0;
             self.nextRef = undefined;
@@ -397,121 +411,14 @@ webui.LogView = function(historyView) {
                 start = end + 1;
                 ++count;
             }
-            svg.setAttribute("height", $(content).outerHeight());
-            svg.setAttribute("width", $(content).outerWidth());
             if (self.nextRef != undefined) {
                 var moreTag = $('<a class="log-entry log-entry-more list-group-item">');
                 $('<a class="list-group-item-text">Show previous commits</a>').appendTo(moreTag[0]);
                 moreTag.click(self.populate);
                 moreTag.appendTo(content);
             }
-
-            self.updateGraph(startAt);
         });
     };
-
-    self.updateGraph = function(startAt) {
-        // Draw the graph
-        var currentY = (startAt + 0.5) * self.lineHeight;
-        var maxLeft = 0;
-        if (startAt == 0) {
-            streamColor = 0;
-        }
-        for (var i = startAt; i < content.children.length; ++i) {
-            var entry = content.children[i].model;
-            if (!entry) {
-                break;
-            }
-            var index = 0;
-            entry.element.webuiLeft = streams.length;
-
-            // Find streams to join
-            var childCount = 0;
-            var xOffset = 12;
-            var removedStreams = 0;
-            for (var j = 0; j < streams.length;) {
-                var stream = streams[j];
-                if (stream.sha1 == entry.commit) {
-                    if (childCount == 0) {
-                        // Replace the stream
-                        stream.path.setAttribute("d", stream.path.cmds + currentY);
-                        if (entry.parents.length == 0) {
-                            streams.splice(j, 1);
-                        } else {
-                            stream.sha1 = entry.parents[0];
-                        }
-                        index = j;
-                        ++j;
-                    } else {
-                        // Join the stream
-                        var x = (index + 1) * xOffset;
-                        stream.path.setAttribute("d", stream.path.cmds + (currentY - self.lineHeight / 2) + " L " + x + " " + currentY);
-                        streams.splice(j, 1);
-                        ++removedStreams;
-                    }
-                    ++childCount;
-                } else {
-                    if (removedStreams != 0) {
-                        var x = (j + 1) * xOffset;
-                        stream.path.setAttribute("d", stream.path.cmds + (currentY - self.lineHeight / 2) + " L " + x + " " + currentY);
-                    }
-                    ++j;
-                }
-            }
-
-            // Add new streams
-            for (var j = 0; j < entry.parents.length; ++j) {
-                var parent = entry.parents[j];
-                var x = (index + j + 1) * xOffset;
-                if (j != 0 || streams.length == 0) {
-                    var svgPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                    ++streamColor
-                    if (streamColor == webui.COLORS.length) {
-                        streamColor = 0;
-                    }
-                    svgPath.setAttribute("style", "stroke:" + webui.COLORS[streamColor]);
-                    var origX = (index + 1) * xOffset;
-                    svgPath.cmds = "M " + origX + " " + currentY + " L " + x + " " + (currentY + self.lineHeight / 2) + " L " + x + " ";
-                    svg.appendChild(svgPath);
-                    var obj = {
-                        sha1: parent,
-                        path: svgPath,
-                    };
-                    streams.splice(index + j, 0, obj);
-                }
-            }
-            for (var j = index + j; j < streams.length; ++j) {
-                var stream = streams[j];
-                var x = (j + 1) * xOffset;
-                stream.path.cmds += (currentY - self.lineHeight / 2) + " L " + x + " " + currentY + " L " + x + " ";
-            }
-
-            var svgCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-            svgCircle.setAttribute("cx", (index + 1) * xOffset);
-            svgCircle.setAttribute("cy", currentY);
-            svgCircle.setAttribute("r", 4);
-            svg.appendChild(svgCircle);
-
-            entry.element.webuiLeft = Math.max(entry.element.webuiLeft, streams.length);
-            maxLeft = Math.max(maxLeft, entry.element.webuiLeft);
-            // Debug log
-            //console.log(entry.commit, entry.parents, $.extend(true, [], streams));
-
-            currentY += self.lineHeight;
-        }
-        for (var i = startAt; i < content.children.length; ++i) {
-            var element = content.children[i];
-            if (element.model) {
-                var minLeft = Math.min(maxLeft, 3);
-                var left = element ? Math.max(minLeft, element.webuiLeft) : minLeft;
-                element.setAttribute("style", element.getAttribute("style") + ";padding-left:" + (left + 1) * xOffset + "px");
-            }
-        }
-        for (var i = 0; i < streams.length; ++i) {
-            var stream = streams[i];
-            stream.path.setAttribute("d", stream.path.cmds + currentY);
-        }
-    }
 
     function Person(data) {
         var nameEnd = data.indexOf("<");
@@ -621,9 +528,11 @@ webui.LogView = function(historyView) {
     };
 
     self.historyView = historyView;
-    self.element = $('<div id="log-view" class="list-group"><svg xmlns="http://www.w3.org/2000/svg"></svg><div></div></div>')[0];
-    var svg = self.element.children[0];
-    var content = self.element.children[1];
+    var search_bar = '<div id="log-search"><input type="text" name="keyword" id="keyword" onkeydown="enter_event()" class="keyword">' +
+                     '<button type="button" class="search" onClick="search();">Search</button></div>';
+    self.element = $('<div id="log-view" class="list-group">' + search_bar + '<div id="content"></div></div>')[0];
+    var svg = self.element.querySelector("#log-svg");
+    var content = self.element.querySelector("#content");
     var currentSelection = null;
     var lineHeight = null;
     var streams = [];
@@ -1751,6 +1660,21 @@ function MainUi() {
     });
 }
 
+var main_webui; 
 $(document).ready(function () {
-    new MainUi()
+    main_webui = new MainUi();
+    $("#keyword").keypress(function (e) {
+        if (e.which == 13)
+            search();
+    });
 });
+
+function search () {
+    var keyword = document.getElementById('keyword').value;
+    main_webui.historyView.logView.search(keyword);
+}
+
+function enter_event() {
+    if(event.keyCode == 13)
+        search();
+}
